@@ -116,7 +116,9 @@ int recv_until_headers(int fd, char *buffer, size_t size) {
 CURLcode fetch(const char *url, int httpver, int client_fd) {
     CURL *curl = curl_easy_init();
     if (!curl) return CURLE_FAILED_INIT;
-
+    struct timeval timeout = {15, 0};
+    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
     curl_easy_setopt(curl, CURLOPT_URL, url);
     struct ProxyState state = {
         .client_fd = client_fd,
@@ -196,12 +198,6 @@ int main(int argc, char *argv[]) {
             }
             close(client_fd);
             continue;
-        }else{
-            if (strcmp(method, "GET") != 0 && strcmp(method, "POST") != 0) {
-                dprintf(client_fd, "HTTP/1.1 501 Not Implemented\r\n\r\n");
-                close(client_fd);
-                continue;
-            }
         }
         char new_url[2048];
         if (strncmp(path, "http://", 7) == 0) {
@@ -213,8 +209,13 @@ int main(int argc, char *argv[]) {
         printf("Fetching: %s (trying HTTP/3)\n", new_url);
         CURLcode res = fetch(new_url, 3, client_fd);
         if (res != CURLE_OK) {
-            fprintf(stderr, "HTTP/3 failed: %s, trying HTTP/1.1\n", curl_easy_strerror(res));
-            fetch(new_url, 1, client_fd);
+            const char* err = curl_easy_strerror(res);
+            if(strncmp(err, "Could not resolve hostname",26) == 0 || strncmp(err, "Could not connect to server",27) == 0) {
+                printf("Could not resolve or connect to server, aborting.\n");
+            } else {
+                fprintf(stderr, "HTTP/3 failed: %s, trying HTTP/1.1\n", err);
+                fetch(new_url, 1, client_fd);
+            }
         }
 
         close(client_fd);
