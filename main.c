@@ -82,7 +82,6 @@ char* extract_hostname(const char* url, char* hostname, size_t size) {
 int check_host_http3_failed(const char* hostname) {
     const int MIN_COUNT = 2;
     int count = 0;
-    // Currently, single success is enough to consider HTTP/3 working
     for (int i = 0; i < host_buffer.count; i++) {
         if (strcmp(host_buffer.entries[i].hostname, hostname) == 0) {
             if (host_buffer.entries[i].http3_failed) {
@@ -90,8 +89,6 @@ int check_host_http3_failed(const char* hostname) {
                 if (count >= MIN_COUNT) {
                     return 1;
                 }
-            } else {
-                return 0;
             }
         }
     }
@@ -337,6 +334,10 @@ CURLcode fetch(const char *url, int httpver, uv_stream_t *client, const char *he
 
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_HEADER, 1L);
+    // curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    // curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);  // 5 second connection timeout
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);        // 30 second total timeout
     
     struct curl_slist *header_list = NULL;
     if (headers && strlen(headers) > 0) {
@@ -430,10 +431,12 @@ void process_request(client_t *client, uv_loop_t *loop) {
     
     if (skip_http3) {
         printf("Fetching: %s (skipping HTTP/3 due to previous failure)\n", client->url);
+        fflush(stdout);
         fetch(client->url, 1, (uv_stream_t *)&client->handle, client->headers);
         add_host_entry(hostname, 1);
     } else {
         printf("Fetching: %s (trying HTTP/3)\n", client->url);
+        fflush(stdout);
         CURLcode res = fetch(client->url, 3, (uv_stream_t *)&client->handle, client->headers);
         if (res != CURLE_OK) {
             const char *err = curl_easy_strerror(res);
@@ -519,8 +522,8 @@ int main(int argc, char *argv[]) {
     uv_tcp_t server;
     uv_tcp_init(loop, &server);
     
-    struct sockaddr_in addr;
-    uv_ip4_addr("127.0.0.1", port, &addr);
+    struct sockaddr_in6 addr;
+    uv_ip6_addr("::", port, &addr);
     
     uv_tcp_bind(&server, (const struct sockaddr *)&addr, 0);
     
@@ -531,6 +534,7 @@ int main(int argc, char *argv[]) {
     }
     
     printf("Proxy listening on port %d\n", port);
+    fflush(stdout);
     
     uv_run(loop, UV_RUN_DEFAULT);
     

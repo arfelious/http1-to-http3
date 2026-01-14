@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -O3
-LDFLAGS = -lcurl -luv
+LDFLAGS = -lcurl -luv -lws2_32
 SRC = main.c
 TARGET = http1-to-http3
 all: $(TARGET)
