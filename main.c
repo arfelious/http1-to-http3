@@ -334,11 +334,41 @@ CURLcode fetch(const char *url, int httpver, uv_stream_t *client, const char *he
 
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_HEADER, 1L);
-    // curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    // curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);  // 5 second connection timeout
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);        // 30 second total timeout
     
+#ifdef PRERESOLVE_DNS
+    // Pre-resolve DNS for HTTP/3 to work around ngtcp2 DNS hang on Windows
+    struct curl_slist *resolve_list = NULL;
+    if (httpver == 3) {
+        char hostname[256];
+        extract_hostname(url, hostname, sizeof(hostname));
+        
+        // Determine port (443 for https, 80 for http)
+        int port = 443;
+        if (strncmp(url, "http://", 7) == 0) port = 80;
+        
+        // Use getaddrinfo to resolve synchronously
+        struct addrinfo hints = {0}, *res = NULL;
+        hints.ai_family = AF_INET;  // IPv4
+        hints.ai_socktype = SOCK_STREAM;
+        
+        if (getaddrinfo(hostname, NULL, &hints, &res) == 0 && res) {
+            struct sockaddr_in *addr = (struct sockaddr_in *)res->ai_addr;
+            char ip[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip));
+            
+            char resolve_entry[512];
+            snprintf(resolve_entry, sizeof(resolve_entry), "%s:%d:%s", hostname, port, ip);
+            resolve_list = curl_slist_append(resolve_list, resolve_entry);
+            curl_easy_setopt(curl, CURLOPT_RESOLVE, resolve_list);
+            
+            freeaddrinfo(res);
+        }
+    }
+#endif
     struct curl_slist *header_list = NULL;
     if (headers && strlen(headers) > 0) {
         char *headers_copy = strdup(headers);
@@ -376,6 +406,11 @@ CURLcode fetch(const char *url, int httpver, uv_stream_t *client, const char *he
     if (header_list) {
         curl_slist_free_all(header_list);
     }
+#ifdef PRERESOLVE_DNS
+    if (resolve_list) {
+        curl_slist_free_all(resolve_list);
+    }
+#endif
     curl_easy_cleanup(curl);
     return res;
 }
