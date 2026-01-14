@@ -132,7 +132,16 @@ size_t write_cb(char *ptr, size_t size, size_t nmemb, void *statedata) {
     char *data_to_send = NULL;
     size_t send_size = total;
     
-    if (!replaced && total >= 9 && version == 3 && memcmp(ptr, "HTTP/3 ", 7) == 0) {
+    if (!replaced && total >= 9 && memcmp(ptr, "HTTP/3 ", 7) == 0) {
+        data_to_send = malloc(total + 2);
+        if (!data_to_send) {
+            return 0;
+        }
+        memcpy(data_to_send, "HTTP/1.1 ", 9);
+        memcpy(data_to_send + 9, ptr + 7, total - 7);
+        send_size = total + 2;
+        state->replaced = 1;
+    } else if (!replaced && total >= 9 && memcmp(ptr, "HTTP/2 ", 7) == 0) {
         data_to_send = malloc(total + 2);
         if (!data_to_send) {
             return 0;
