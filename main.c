@@ -492,11 +492,21 @@ void process_request(client_t *client, uv_loop_t *loop) {
             } else {
                 fprintf(stderr, "HTTP/3 failed: %s, trying HTTP/1.1\n", err);
                 add_host_entry(hostname, 1);
-                fetch(client->url, 1, (uv_stream_t *)&client->handle, client->headers);
+                CURLcode res2 = fetch(client->url, 1, (uv_stream_t *)&client->handle, client->headers);
+                if (res2 != CURLE_OK) {
+                    fprintf(stderr, "HTTP/1.1 also failed: %s\n", curl_easy_strerror(res2));
+                } else {
+                    printf("HTTP/1.1 fallback succeeded\n");
+                }
             }
         } else {
             add_host_entry(hostname, 0);
         }
+    }
+    
+    // Flush pending writes before closing - run event loop briefly to process queued writes
+    for (int i = 0; i < 10; i++) {
+        uv_run(client->handle.loop, UV_RUN_NOWAIT);
     }
     
     uv_close((uv_handle_t *)&client->handle, on_client_close);
