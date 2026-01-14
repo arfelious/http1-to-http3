@@ -39,6 +39,12 @@ typedef struct {
     int active;
 } tunnel_t;
 
+typedef struct {
+    uv_write_t req;
+    uv_buf_t buf;
+    tunnel_t *tunnel;
+} tunnel_write_req_t;
+
 struct ProxyState {
     uv_stream_t *client;
     int replaced;
@@ -189,7 +195,18 @@ void tunnel_close_cb(uv_handle_t *handle) {
 }
 
 void tunnel_write_cb(uv_write_t *req, int status) {
-    free(req);
+    tunnel_write_req_t *wr = (tunnel_write_req_t *)req;
+    if (wr->buf.base) {
+        free(wr->buf.base);
+    }
+    if (status < 0 && wr->tunnel && wr->tunnel->active) {
+        // Write failed, close the tunnel
+        wr->tunnel->active = 0;
+        uv_close((uv_handle_t *)wr->tunnel->client, tunnel_close_cb);
+        uv_close((uv_handle_t *)wr->tunnel->server, tunnel_close_cb);
+        free(wr->tunnel);
+    }
+    free(wr);
 }
 
 void tunnel_read_client(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
@@ -211,9 +228,14 @@ void tunnel_read_client(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
         return;
     }
     
-    uv_write_t *req = (uv_write_t *)malloc(sizeof(uv_write_t));
-    uv_buf_t wrbuf = uv_buf_init(buf->base, nread);
-    uv_write(req, (uv_stream_t *)tunnel->server, &wrbuf, 1, tunnel_write_cb);
+    char *data = (char *)malloc(nread);
+    memcpy(data, buf->base, nread);
+    free(buf->base);
+    
+    tunnel_write_req_t *wr = (tunnel_write_req_t *)malloc(sizeof(tunnel_write_req_t));
+    wr->buf = uv_buf_init(data, nread);
+    wr->tunnel = tunnel;
+    uv_write((uv_write_t *)wr, (uv_stream_t *)tunnel->server, &wr->buf, 1, tunnel_write_cb);
 }
 
 void tunnel_read_server(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
@@ -235,9 +257,14 @@ void tunnel_read_server(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
         return;
     }
     
-    uv_write_t *req = (uv_write_t *)malloc(sizeof(uv_write_t));
-    uv_buf_t wrbuf = uv_buf_init(buf->base, nread);
-    uv_write(req, (uv_stream_t *)tunnel->client, &wrbuf, 1, tunnel_write_cb);
+    char *data = (char *)malloc(nread);
+    memcpy(data, buf->base, nread);
+    free(buf->base);
+    
+    tunnel_write_req_t *wr = (tunnel_write_req_t *)malloc(sizeof(tunnel_write_req_t));
+    wr->buf = uv_buf_init(data, nread);
+    wr->tunnel = tunnel;
+    uv_write((uv_write_t *)wr, (uv_stream_t *)tunnel->client, &wr->buf, 1, tunnel_write_cb);
 }
 
 void on_connect_complete(uv_connect_t *req, int status) {
@@ -301,6 +328,9 @@ int handle_connect(const char *line, uv_tcp_t *client, uv_loop_t *loop) {
         return -1;
     }
     
+    printf("CONNECT tunnel: %s:%d\n", host, port);
+    fflush(stdout);
+    
     tunnel_t *tunnel = (tunnel_t *)malloc(sizeof(tunnel_t));
     tunnel->client = client;
     tunnel->server = (uv_tcp_t *)malloc(sizeof(uv_tcp_t));
@@ -343,9 +373,9 @@ CURLcode fetch(const char *url, int httpver, uv_stream_t *client, const char *he
 
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_HEADER, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);  // 5 second connection timeout
+    // curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    // curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);  // 10 second connection timeout
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);        // 30 second total timeout
     
 #ifdef PRERESOLVE_DNS
@@ -355,11 +385,9 @@ CURLcode fetch(const char *url, int httpver, uv_stream_t *client, const char *he
         char hostname[256];
         extract_hostname(url, hostname, sizeof(hostname));
         
-        // Determine port (443 for https, 80 for http)
         int port = 443;
         if (strncmp(url, "http://", 7) == 0) port = 80;
         
-        // Use getaddrinfo to resolve synchronously
         struct addrinfo hints = {0}, *res = NULL;
         hints.ai_family = AF_INET;  // IPv4
         hints.ai_socktype = SOCK_STREAM;
@@ -502,11 +530,6 @@ void process_request(client_t *client, uv_loop_t *loop) {
         } else {
             add_host_entry(hostname, 0);
         }
-    }
-    
-    // Flush pending writes before closing - run event loop briefly to process queued writes
-    for (int i = 0; i < 10; i++) {
-        uv_run(client->handle.loop, UV_RUN_NOWAIT);
     }
     
     uv_close((uv_handle_t *)&client->handle, on_client_close);
